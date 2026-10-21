@@ -1,0 +1,4 @@
+# Settings (includes the Notion API key in plain text) and saved copies of the
+# Notion database (real data) -- never commit either.
+NotionSync.ini
+databases/
