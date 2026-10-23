@@ -11,7 +11,7 @@
 ;				layer. Match a sheet row to a Notion entry, then push/pull data
 ;				both ways.
 
-; VERSION:		2.10.20.26
+; VERSION:		2.10.23.26
 ; AUTHOR:		Noel Gordon (noel.gordon@ceterapartners.com)
 ; SOURCE:		none
 
@@ -86,11 +86,12 @@
 
 ; Dependencies (auto-included; #Include is only processed once even if your
 ; calling script also includes them). This utility was split out of the AHK
-; Utility Library; NotionCom.ahk and ExcelCom.ahk still live there and are
-; referenced by absolute path for now -- a temporary stopgap until dependency
-; resolution is made portable (see the project Worklist).
-#Include "C:\Users\Noel\OneDrive\_Coding\Autohotkey\GitHub\AHK_Utility_Lib\NotionCom.ahk"
-#Include "C:\Users\Noel\OneDrive\_Coding\Autohotkey\GitHub\AHK_Utility_Lib\ExcelCom.ahk"
+; Utility Library; local (vendored) copies of NotionCom.ahk and ExcelCom.ahk
+; (plus NotionAPI.ahk and UtilityWindows.ahk) live in this repo's lib\ folder
+; and are included by repo-relative path. Do not edit those copies here --
+; change them upstream in the library and refresh the local copy.
+#Include lib\ExcelCom.ahk
+#Include lib\NotionCom.ahk
 
 
 
@@ -373,6 +374,12 @@ NotionExcelSync_pullProperty(excelIdCol, notionPullProp, excelWriteCol, startRow
 ; clears a Notion value). A row whose page can't be read/written is counted as
 ; failed and left unchanged.
 ;
+; DATE TARGETS: this sweep accepts whole-day Excel date serials (using the
+; workbook's 1900/1904 date system) or valid YYYY-MM-DD text, and writes a
+; single date without time or range. Times/fractional serials, ambiguous text,
+; invalid dates, and Excel errors count as failed rows. Blank sources are
+; skipped. Date targets require strategy "replace" and retain overwrite protection.
+;
 ; CREATING PAGES: a row whose ID cell reads <newIdToken> (default "NEW_PAGE",
 ; matched case-insensitively) is a request to CREATE a new page. It's only acted
 ; on when <createPages> is true (otherwise the row is counted in newSkipped and
@@ -417,6 +424,9 @@ NotionExcelSync_pullProperty(excelIdCol, notionPullProp, excelWriteCol, startRow
 ; from the first failed row.
 NotionExcelSync_pushProperty(excelIdCol, excelSourceCol, notionPushProp, strategy, overwrite, startRow := 0, endRow := 0, createPages := false, newIdToken := "NEW_PAGE") {
 	_NotionExcelSync_requireProperty(notionPushProp)
+    isDateProperty := (NotionCom_getSchema()[notionPushProp] = "date")
+    if (isDateProperty && strategy != "replace")
+        throw Error("Date properties support Replace only; Append is not supported.", -1)
 	ctx := _NotionExcelSync_ctx()
 	firstRow := (startRow > 0) ? startRow : ctx.row
 	lastRow := _NotionExcelSync_lastRowInRange(ctx.sheet, excelIdCol, endRow)
@@ -434,12 +444,20 @@ NotionExcelSync_pushProperty(excelIdCol, excelSourceCol, notionPushProp, strateg
 			result.newSkipped++
 			continue
 		}
-		sourceText := _NotionExcelSync_cellText(ctx.sheet.Cells(row, excelSourceCol))
-		if (sourceText = "") {
-			result.blankSource++
-			continue
-		}
-		try {
+        ; Date targets read Value2 inside the row's error handler, not locale text.
+        sourceText := isDateProperty ? "" : _NotionExcelSync_cellText(ctx.sheet.Cells(row, excelSourceCol))
+        if (!isDateProperty && sourceText = "") {
+            result.blankSource++
+            continue
+        }
+        try {
+            if (isDateProperty) {
+                sourceText := _NotionExcelSync_dateOnlyCell(ctx.sheet.Cells(row, excelSourceCol), ctx.sheet.Parent.Date1904)
+                if (sourceText = "") {
+                    result.blankSource++
+                    continue
+                }
+            }
 			if (isNew) {
 				newId := _NotionExcelSync_createPageForPush(notionPushProp, sourceText)
 				_NotionExcelSync_writeCell(ctx.sheet, row, excelIdCol, newId)
@@ -527,6 +545,64 @@ _NotionExcelSync_cellText(cell) {
 	if (v is Float && v = Floor(v))
 		v := Integer(v)
 	return Trim(v . "")
+}
+
+
+; Internal: convert one Excel cell to a validated date-only ISO string.
+; Value2 avoids Date/Currency coercion and display-width/locale dependence.
+; Numeric values are Excel serials in the workbook's own date system; text
+; must be YYYY-MM-DD. Reject times instead of silently discarding them.
+; Sources: https://learn.microsoft.com/en-us/office/vba/api/excel.range.value2
+; https://support.microsoft.com/en-us/office/date-systems-in-excel-e7fe7167-48a9-4b96-bb53-5612a800b487
+; https://learn.microsoft.com/en-us/troubleshoot/microsoft-365-apps/excel/wrongly-assumes-1900-is-leap-year
+_NotionExcelSync_dateOnlyCell(cell, uses1904DateSystem) {
+    static EXCEL_1900_BASE_TIMESTAMP := "18991231000000" ; Serial 1 is 1900-01-01.
+    static EXCEL_1904_BASE_TIMESTAMP := "19040101000000" ; Serial 0 is 1904-01-01.
+    static EXCEL_1900_MAXIMUM_SERIAL := 2958465          ; Last supported date: 9999-12-31.
+    static EXCEL_1904_MAXIMUM_SERIAL := 2957003          ; Same last date in the 1904 system.
+    static EXCEL_FICTITIOUS_LEAP_DAY := 60              ; 1900-02-29 never existed.
+    static ISO_DATE_PATTERN         := "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    static MONTH_LENGTHS            := [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+    ; 1. Read the underlying value, leaving blank cells blank and rejecting errors.
+    sourceValue := cell.Value2
+    if IsObject(sourceValue)
+        throw ValueError("Date source is an Excel error or unsupported value; correct the cell before pushing.", -1)
+
+    ; 2. Convert a whole-day serial without any timezone or locale interpretation.
+    if (sourceValue is Integer || sourceValue is Float) {
+        if (sourceValue != Floor(sourceValue))
+            throw ValueError("Date-only push does not accept times. Remove the time portion from the Excel value.", -1)
+        minimumSerial := uses1904DateSystem ? 0 : 1
+        maximumSerial := uses1904DateSystem ? EXCEL_1904_MAXIMUM_SERIAL : EXCEL_1900_MAXIMUM_SERIAL
+        if (sourceValue < minimumSerial || sourceValue > maximumSerial)
+            throw ValueError("Excel date serial is outside the supported workbook date range.", -1)
+        if (!uses1904DateSystem && sourceValue = EXCEL_FICTITIOUS_LEAP_DAY)
+            throw ValueError("Excel serial 60 represents the nonexistent date 1900-02-29; correct this cell.", -1)
+        dayOffset := Integer(sourceValue)
+        if (!uses1904DateSystem && dayOffset > EXCEL_FICTITIOUS_LEAP_DAY)
+            dayOffset -= 1                            ; Remove Excel's fictitious leap day.
+        baseTimestamp := uses1904DateSystem ? EXCEL_1904_BASE_TIMESTAMP : EXCEL_1900_BASE_TIMESTAMP
+        return FormatTime(DateAdd(baseTimestamp, dayOffset, "Days"), "yyyy-MM-dd")
+    }
+
+    ; 3. Accept only explicit ISO date text; never guess month/day ordering.
+    sourceText := Trim(sourceValue . "")
+    if (sourceText = "")
+        return ""
+    if !RegExMatch(sourceText, ISO_DATE_PATTERN)
+        throw ValueError("Use a date-only Excel value or YYYY-MM-DD text (no time or date range).", -1)
+    yearNumber  := Integer(SubStr(sourceText, 1, 4))
+    monthNumber := Integer(SubStr(sourceText, 6, 2))
+    dayNumber   := Integer(SubStr(sourceText, 9, 2))
+    if (yearNumber < 1 || monthNumber < 1 || monthNumber > 12)
+        throw ValueError("Invalid calendar date: " . sourceText, -1)
+    maximumDay := MONTH_LENGTHS[monthNumber]
+    if (monthNumber = 2 && Mod(yearNumber, 4) = 0 && (Mod(yearNumber, 100) != 0 || Mod(yearNumber, 400) = 0))
+        maximumDay := 29
+    if (dayNumber < 1 || dayNumber > maximumDay)
+        throw ValueError("Invalid calendar date: " . sourceText, -1)
+    return sourceText
 }
 
 

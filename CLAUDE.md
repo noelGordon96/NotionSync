@@ -26,19 +26,24 @@ Two files make up this project:
   database entries. Talks to Notion only through `NotionCom.ahk` and to Excel through
   `ExcelCom.ahk`.
 
-### Dependency on the AHK Utility Library (temporary)
+### Dependency on the AHK Utility Library (local copies in `lib\`)
 
-The Notion/Excel **library layers stay in the AHK Utility Library** and are **not** part of
-this repo:
+The Notion/Excel **library layers originate in the AHK Utility Library**, but a **local
+(vendored) copy of each lives in this repo's `lib\` folder**, so the utility carries all of its
+dependencies with it and runs wherever it is cloned:
 
-- `NotionCom.ahk` (friendly Notion layer) → pulls in `NotionAPI.ahk` (raw API) + `UtilityWindows.ahk`
-- `ExcelCom.ahk` (Excel COM layer)
+- `lib\NotionCom.ahk` (friendly Notion layer) → pulls in `lib\NotionAPI.ahk` (raw API) + `lib\UtilityWindows.ahk`
+- `lib\ExcelCom.ahk` (Excel COM layer)
 
-For now `NotionExcelSync.ahk` references those by **hard-coded absolute path** into the AHK
-Utility Library's install location. **This is a known, deliberate stopgap** — making dependency
-resolution portable (so the utility can be handed to other users) is a tracked, separate task;
-do **not** start it without explicit direction (see the project Worklist in Notion). Until then,
-the absolute path is expected and correct.
+`NotionExcelSync.ahk` includes these by **repo-relative path** (`#Include lib\...`) — there is no
+hard-coded absolute path into the library's install location.
+
+**These four files (`ExcelCom.ahk`, `NotionAPI.ahk`, `NotionCom.ahk`, `UtilityWindows.ahk`) are
+vendored copies of stable library files — do not edit them here.** If one needs a change, an
+addition, or a bug fix, make it **upstream in the AHK Utility Library** and refresh the local
+copy; this repo is not the place to diverge from the library. Acquiring library updates
+automatically (instead of keeping a manual local copy) is a possible future direction — do
+**not** start it without explicit direction.
 
 ---
 
@@ -85,9 +90,9 @@ update its `; VERSION:` header to that day's date.
 
 ### 8. Caller-context independence
 Read the caller's own context via `A_ScriptDir` — this app already stores its `NotionSync.ini`
-and `databases\` folder next to itself via `A_ScriptDir`, which is correct and portable. The one
-deliberate exception is the hard-coded absolute path to the AHK Utility Library layers described
-above, which is a temporary stopgap pending the portability task.
+and `databases\` folder next to itself via `A_ScriptDir`, which is correct and portable. Its
+AHK Utility Library dependencies are the local copies in `lib\`, included by repo-relative path
+(see above) — there is no longer any hard-coded absolute path.
 
 ### 9. Never commit secrets
 `NotionSync.ini` holds the Notion API key in **plain text**, and `databases\` holds real pulled

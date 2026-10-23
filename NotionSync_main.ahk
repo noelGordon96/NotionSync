@@ -35,7 +35,7 @@
 ;				friendly layers (NotionCom.ahk and NotionExcelSync.ahk), never
 ;				NotionAPI.ahk directly.
 
-; VERSION:		2.10.20.26
+; VERSION:		2.10.23.26
 ; AUTHOR:		Noel Gordon (noel.gordon@ceterapartners.com)
 ; SOURCE:		none
 
@@ -114,6 +114,12 @@ addDatabaseLabel := "Add new database..."
 
 ; The last option in each header pick-list; picking it adds a new Excel header.
 addHeaderLabel := "Add new header..."
+
+; How far each spawned dialog steps down-and-right from its parent window's
+; CURRENT position (screen pixels), so a child cascades off wherever its parent
+; actually is at spawn time rather than re-centring on the monitor.
+cascadeOffsetX := 30
+cascadeOffsetY := 30
 
 ; busy      : true while an action is running (ignores extra clicks)
 ; databases : the known databases, in list order: an Array of { name, id }
@@ -648,7 +654,7 @@ NotionSync_pullProperty(selectedRow) {
 ; to Notion down the sheet. Needs a live connection (checked in NotionSync_doAction).
 NotionSync_pushColumn(selectedRow) {
 	; The Notion property types this can push to. Others are hidden from the list.
-	pushableTypes := ["title", "rich_text", "url", "email", "phone_number", "multi_select", "relation"]
+	pushableTypes := ["title", "rich_text", "url", "email", "phone_number", "multi_select", "relation", "date"]
 
 	answer := NotionSync_prompt("Push Column",
 		"Pushes a column UP to Notion. By default it processes the whole page-ID column (row 2 down); tick 'Start at selected row' to begin at row " . selectedRow . " and limit to the rows you set. Blank source cells are skipped. 'Overwrite' lets Replace change a property that already has data; Append always adds without removing. 'Create missing pages' makes a new Notion page for any ID cell reading NEW_PAGE (writing the new ID back). The note under the property shows how to fill the source cell for the type you pick.",
@@ -661,7 +667,8 @@ NotionSync_pushColumn(selectedRow) {
 		  { key: "createPages", kind: "checkbox", label: "Create missing pages", def: false },
 		  { key: "startAtSelected", kind: "checkbox", label: "Start at selected row", def: false },
 		  { key: "rowCount", kind: "number", label: "Rows to process", def: "", enabledWhen: { key: "startAtSelected", checked: true } } ],
-		(v) => (v["sourceCol"] = v["idCol"]) ? "The source column can't be the same as the page ID column." : "")
+		(v) => (v["sourceCol"] = v["idCol"]) ? "The source column can't be the same as the page ID column."
+			: (NotionCom_getSchema()[v["pushProp"]] = "date" && v["mode"] = "Append") ? "Date properties support Replace only. Choose Replace; use Overwrite if the existing date should change." : "")
 	if !IsObject(answer)
 		return
 
@@ -728,6 +735,8 @@ NotionSync_pushHelpText(propName) {
 			return "Multi-select: the source cell holds option names, separated by semicolons. Append adds to the options already set; Replace sets them."
 		case "title", "rich_text":
 			return "Text: the source cell is pushed as text. Append adds it after the existing text (existing; new); Replace overwrites it."
+		case "date":
+			return "Date only: use Excel dates or YYYY-MM-DD text. Times, ranges, and other text formats are rejected. Choose Replace; Overwrite is required to change an existing date. Blank source cells are skipped."
 		case "url", "email", "phone_number":
 			return "Single value: the source cell is pushed as-is. Append isn't supported for this type, so it always replaces."
 		default:
@@ -898,13 +907,24 @@ NotionSync_prompt(title, info, fields, check := "", ownerHwnd := 0) {
 
 	state := { result: "" }
 	ownerGui := GuiFromHwnd(oh)
-	if (ownerGui)
-		ownerGui.Opt("+Disabled")
-	dlg.Show()
-	WinWaitClose("ahk_id " . dlg.Hwnd)
-	if (ownerGui)
-		ownerGui.Opt("-Disabled")
-	WinActivate("ahk_id " . oh)
+	dialogWindowHandle := dlg.Hwnd                 ; Cache before OK/Cancel can destroy the GUI.
+	try {
+		; 1. Keep the owner modal while positioning and waiting for the dialog.
+		if (ownerGui)
+			ownerGui.Opt("+Disabled")
+		NotionSync_cascadeDialog(dlg, oh)
+		WinWaitClose("ahk_id " . dialogWindowHandle)
+	} finally {
+		; 2. Restore the owner even if positioning fails, before closing any child.
+		if (ownerGui && WinExist(oh))
+			ownerGui.Opt("-Disabled")
+		; 3. Clean up an unfinished dialog; direct handles also find hidden GUIs.
+		if WinExist(dialogWindowHandle)
+			dlg.Destroy()
+		; 4. Return focus only if the owner still exists.
+		if WinExist(oh)
+			WinActivate(oh)
+	}
 	return state.result
 
 
@@ -1144,6 +1164,23 @@ NotionSync_raiseLibraryWindows() {
 	for hwnd in WinGetList("NotionCom - ")
 		if !(WinGetExStyle("ahk_id " . hwnd) & 0x8)
 			WinSetAlwaysOnTop(true, "ahk_id " . hwnd)
+}
+
+
+; Show <dlg> stepped down-and-right from its owner window's CURRENT position, so a
+; spawned dialog cascades off wherever its parent actually is at spawn time (not
+; the monitor centre). The window is sized while hidden, then moved with Win32
+; SCREEN coordinates -- which WinGetPos and WinMove share -- before being revealed,
+; so Gui.Show's DPI-scaled coordinates are never mixed in. Nested dialogs pass
+; their parent dialog's Hwnd as the owner, so each level steps off the one above it.
+NotionSync_cascadeDialog(dlg, ownerHwnd) {
+	dlg.Show("Hide")
+	WinGetPos(&ownerX, &ownerY, , , "ahk_id " . ownerHwnd)
+	; A direct HWND finds the hidden GUI without changing DetectHiddenWindows.
+	; Source: https://www.autohotkey.com/docs/v2/lib/DetectHiddenWindows.htm
+	WinMove(ownerX + cascadeOffsetX, ownerY + cascadeOffsetY, , , dlg.Hwnd)
+	WinShow("ahk_id " . dlg.Hwnd)
+	WinActivate("ahk_id " . dlg.Hwnd)
 }
 
 
