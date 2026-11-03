@@ -14,7 +14,7 @@
 ;				tools (e.g. NotionExcelSync.ahk) should script against instead of
 ;				reaching into NotionAPI.ahk.
 
-; VERSION:		2.9.28.26
+; VERSION:		2.10.28.26
 ; AUTHOR:		Noel Gordon (noel.gordon@ceterapartners.com)
 ; SOURCE:		none
 
@@ -71,6 +71,12 @@
 ;   ; --- Match and read a single other property in one call (no second lookup) ---
 ;   dept := NotionCom_matchProperty("Email", "jane@example.com", "Department")
 ;
+;   ; --- Every page ID in the loaded database (walk them all) ---
+;   ids := NotionCom_allIds()
+;
+;   ; --- Page IDs whose property merely CONTAINS a value (substring match) ---
+;   acme := NotionCom_containsIds("Company", "Acme")
+;
 ;   ; --- Already have a page ID? Read/write one property at a time ---
 ;   name := NotionCom_getProperty(id, "Name")
 ;   NotionCom_setProperty(id, "Department", "Engineering")
@@ -112,6 +118,13 @@
 ;     NotionCom_matchIds(matchProp, matchValue, caseSensitive := false)
 ;       -- returns an Array of ALL matching page IDs (use to detect duplicates
 ;          before trusting matchId's "first match").
+;     NotionCom_containsIds(matchProp, matchValue, caseSensitive := false)
+;       -- like matchIds, but SUBSTRING instead of equals: an Array of every
+;          page ID whose matchProp value CONTAINS matchValue.
+;   Enumerating (no match -- walk every cached row):
+;     NotionCom_allIds()
+;       -- an Array of EVERY cached page's ID, in cache order. The walk-all
+;          primitive (e.g. pulling a whole database downstream).
 ;   Reading a page you already have the ID for:
 ;     NotionCom_getPage(pageId)       -- the whole page object (a Map).
 ;     NotionCom_getProperty(pageId, propName) -- one property's value.
@@ -306,6 +319,54 @@ NotionCom_matchProperty(matchProp, matchValue, readProp, caseSensitive := false)
 NotionCom_matchIds(matchProp, matchValue, caseSensitive := false) {
 	out := []
 	for row in NotionAPI_matchRows(_NotionCom_rows(), matchProp, matchValue, caseSensitive)
+		out.Push(row["id"])
+	return out
+}
+
+
+; Like NotionCom_matchIds (all matches, as an Array of page IDs), but matches on
+; SUBSTRING rather than equality: returns every page whose <matchProp> value
+; CONTAINS <matchValue>. Case-insensitive by default, matching the convention of
+; the equals-matching verbs above -- the "contains" companion to matchIds, for
+; partial-key or "any row mentioning X" lookups the equals verbs can't express.
+;
+; matchProp     : the property to test on each cached row.
+; matchValue    : the substring to look for within that property's value.
+; caseSensitive : (optional) when true, the substring test is case-sensitive.
+;
+; Searches whatever's currently in memory -- call NotionCom_pull() or
+; NotionCom_load() first. Throws the same "no database loaded" error the other
+; readers do if nothing has been pulled/loaded yet.
+;
+; Returns an Array of matching page IDs (each as stored, hyphens and all), in
+; cache order; empty if nothing matched. An empty <matchValue> matches every row
+; (every value contains the empty string).
+NotionCom_containsIds(matchProp, matchValue, caseSensitive := false) {
+	needle := matchValue . ""
+	out := []
+	for row in _NotionCom_rows() {
+		haystack := _NotionCom_valueText(NotionAPI_getPropValue(row, matchProp))
+		if (needle = "" || InStr(haystack, needle, caseSensitive))
+			out.Push(row["id"])
+	}
+	return out
+}
+
+
+; Return the page ID of EVERY row currently in memory, as an Array (empty if the
+; database loaded but has no rows), in cache order. Unlike the matching verbs it
+; tests nothing -- it is the walk-all primitive they complement, for when you
+; want to iterate every page (e.g. pulling a whole database downstream) rather
+; than search for one.
+;
+; Reads whatever's currently in memory -- call NotionCom_pull() or
+; NotionCom_load() first. Throws the same "no database loaded" error the other
+; readers do if nothing has been pulled/loaded yet.
+;
+; Returns an Array of page IDs (each as stored, hyphens and all), in cache order.
+NotionCom_allIds() {
+	out := []
+	for row in _NotionCom_rows()
 		out.Push(row["id"])
 	return out
 }
@@ -677,6 +738,29 @@ _NotionCom_truthy(value) {
 		return value != 0
 	v := StrLower(Trim(value . ""))
 	return (v = "true" || v = "yes" || v = "y" || v = "x" || v = "1" || v = "checked" || v = Chr(0x2713))
+}
+
+
+; Internal: flatten a property value (as returned by NotionAPI_getPropValue) to a
+; single searchable string for NotionCom_containsIds. Arrays (multi_select,
+; relation) and Maps (structured values) are flattened so a substring test can
+; span their parts; any other object has no text form and yields "".
+_NotionCom_valueText(value) {
+	if (value is Array) {
+		text := ""
+		for v in value
+			text .= (text = "" ? "" : "`n") . _NotionCom_valueText(v)
+		return text
+	}
+	if (value is Map) {
+		text := ""
+		for , v in value
+			text .= (text = "" ? "" : "`n") . _NotionCom_valueText(v)
+		return text
+	}
+	if (IsObject(value))
+		return ""
+	return value . ""
 }
 
 

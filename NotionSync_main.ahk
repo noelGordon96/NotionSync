@@ -28,14 +28,14 @@
 ;				The Notion API key is asked for (in a small dialog) the first
 ;				time it's needed and then kept in NotionSync.ini, along with
 ;				the list of known databases (name + ID), the selected database
-;				and the Excel window name. On startup the currently open Excel window is detected and filled into that field automatically. Every window this app opens stays on
+;				and the Excel window name. On startup the currently open Excel window is detected and filled into that field automatically, and the main window opens centered over it. Every window this app opens stays on
 ;				top.
 ;
 ;				This is an APPLICATION, not a library: it only calls the
 ;				friendly layers (NotionCom.ahk and NotionExcelSync.ahk), never
 ;				NotionAPI.ahk directly.
 
-; VERSION:		2.10.23.26
+; VERSION:		2.11.3.26
 ; AUTHOR:		Noel Gordon (noel.gordon@ceterapartners.com)
 ; SOURCE:		none
 
@@ -134,7 +134,7 @@ cascadeOffsetY := 30
 ; the rest  : the last other answers given in the dialogs, offered again next
 ;             time (this session only -- only the settings in the ini are
 ;             saved to disk)
-appState := { busy: false, databases: [], dbIndex: 0, loadedKey: "", connected: false, pageIdCol: "", matchCol: "", matchProp: "", pullProp: "", writeCol: "", pushSourceCol: "", pushProp: "", pushMode: "Replace" }
+appState := { busy: false, databases: [], dbIndex: 0, loadedKey: "", connected: false, pageIdCol: "", matchCol: "", matchProp: "", filterProp: "", filterValue: "", pullProp: "", writeCol: "", pushSourceCol: "", pushProp: "", pushMode: "Replace" }
 
 ; The main window's controls, filled in by NotionSync_showMainWindow().
 ui := {}
@@ -155,6 +155,13 @@ if (A_LineFile = A_ScriptFullPath)
 
 ; Build and show the main window, filled in from the ini file.
 NotionSync_showMainWindow() {
+	; Brand the app (tray icon + the windows that adopt it) with the green Notion
+	; icon when it's present next to the script. Set before any Gui is created so
+	; the main window picks it up.
+	iconPath := A_ScriptDir . "\other\notion_icon_green.ico"
+	if FileExist(iconPath)
+		TraySetIcon(iconPath)
+
 	try NotionSync_migrateOldSettings()
 	appState.databases := NotionSync_loadDatabases()
 	saved := NotionSync_loadSettings()
@@ -195,7 +202,9 @@ NotionSync_showMainWindow() {
 	ui.btnPush.OnEvent("Click", (*) => NotionSync_run("push"))
 	ui.win.OnEvent("Close", (*) => ExitApp())
 
-	ui.win.Show()
+	; Open the main window centered over the detected Excel window, so it lands where
+	; the user is working rather than at the OS default spot (no Excel open: default).
+	NotionSync_showCenteredOnExcel(ui.win)
 }
 
 
@@ -579,24 +588,42 @@ NotionSync_useLocalCopy(db) {
 
 
 ; "Pull Page ID": ask which columns/property, then stamp page IDs down the sheet.
+; Two modes share the one dialog: the default MATCH mode (match each row's value
+; to a Notion page and write its ID), and PULL ALL (tick the box) -- write every
+; page's ID straight down the ID column, no matching, optionally keeping only the
+; pages whose chosen property contains a filter value.
 NotionSync_pullPageIds(selectedRow) {
 	answer := NotionSync_prompt("Pull Page ID",
-		"By default, matches the whole match column (row 2 down to the last row with a value). Tick 'Start at selected row' to instead begin at row " . selectedRow . " (the selected row) and process the number of rows you set. Rows with no match are left unchanged.",
-		[ { key: "matchCol", kind: "header", label: "Excel header to match on", def: appState.matchCol },
-		  { key: "matchProp", kind: "property", label: "Notion property to match on", def: appState.matchProp },
+		"Matches sheet rows to Notion pages and writes each page's ID into a column. By default it matches the whole match column (row 2 down to the last value); tick 'Start at selected row' to begin at row " . selectedRow . " and process the number of rows you set. Rows with no match are left unchanged.`n`nTick 'Pull ALL pages (no matching)' to instead write every page's ID straight down the ID column -- optionally only the pages whose chosen property contains a filter value. That mode ignores the match column/property and, since it matches nothing, only runs when the ID column is empty below its header.",
+		[ { key: "pullAll", kind: "checkbox", label: "Pull ALL pages (no matching)", def: false },
+		  { key: "matchCol", kind: "header", label: "Excel header to match on", def: appState.matchCol, enabledWhen: { key: "pullAll", checked: false } },
+		  { key: "matchProp", kind: "property", label: "Notion property to match on", def: appState.matchProp, enabledWhen: { key: "pullAll", checked: false } },
 		  { key: "pageIdCol", kind: "header", label: "Header to put the page IDs in", def: appState.pageIdCol },
+		  { key: "filterProp", kind: "property", label: "Filter: Notion property (optional)", def: appState.filterProp, optional: true, enabledWhen: { key: "pullAll", checked: true } },
+		  { key: "filterValue", kind: "text", label: "Filter: value it must contain", def: appState.filterValue, optional: true, enabledWhen: { key: "pullAll", checked: true } },
 		  { key: "startAtSelected", kind: "checkbox", label: "Start at selected row", def: false },
 		  { key: "rowCount", kind: "number", label: "Rows to process", def: "", enabledWhen: { key: "startAtSelected", checked: true } } ],
-		(v) => (v["pageIdCol"] = v["matchCol"]) ? "The page ID column can't be the same as the match column -- it would overwrite the values being matched." : "")
+		NotionSync_checkPullPageId)
 	if !IsObject(answer)
 		return
 
-	appState.matchCol := answer.texts["matchCol"]
-	appState.matchProp := answer.texts["matchProp"]
 	appState.pageIdCol := answer.texts["pageIdCol"]
+	if (answer.values["pullAll"]) {
+		appState.filterProp := answer.texts["filterProp"]
+		appState.filterValue := answer.texts["filterValue"]
+	} else {
+		appState.matchCol := answer.texts["matchCol"]
+		appState.matchProp := answer.texts["matchProp"]
+	}
+
+	range := NotionSync_rowRange(answer, selectedRow)
+
+	if (answer.values["pullAll"]) {
+		NotionSync_pullAllPageIds(answer, range)
+		return
+	}
 
 	NotionSync_status("Matching rows against the local copy...")
-	range := NotionSync_rowRange(answer, selectedRow)
 	r := NotionExcelSync_stampPageIds(answer.values["matchCol"], answer.values["matchProp"], answer.values["pageIdCol"], range.start, range.end)
 
 	if (r.lastRow < r.firstRow) {
@@ -610,6 +637,47 @@ NotionSync_pullPageIds(selectedRow) {
 		. r.blank . "  blank match cell -- skipped"
 	if (r.duplicates)
 		summary .= "`n`n" . r.duplicates . " of the matched rows had more than one Notion page with that value (the first was used)."
+	NotionSync_msg(summary, "Notion Sync - Pull Page ID", "Iconi")
+}
+
+
+; Returns "" if the Pull Page ID dialog's answers are usable, else a message.
+; MATCH mode needs the page ID column to differ from the match column; PULL ALL
+; mode needs a filter property whenever a filter value is given (blank = pull all).
+NotionSync_checkPullPageId(v) {
+	if (!v["pullAll"])
+		return (v["pageIdCol"] = v["matchCol"]) ? "The page ID column can't be the same as the match column -- it would overwrite the values being matched." : ""
+	if (Trim(v["filterValue"]) != "" && v["filterProp"] = "")
+		return "To filter, also pick the Notion property to test -- or clear the filter value to pull every page."
+	return ""
+}
+
+
+; The "Pull ALL pages" path of Pull Page ID: write every page's ID (or only the
+; filtered ones) straight down the ID column. The bridge refuses (writing nothing)
+; when that column already has data below its header, so it's never clobbered.
+NotionSync_pullAllPageIds(answer, range) {
+	NotionSync_status("Reading page IDs from the local copy...")
+	r := NotionExcelSync_stampAllPageIds(answer.values["pageIdCol"], range.start, range.end, answer.values["filterProp"], answer.values["filterValue"])
+
+	if (r.blocked) {
+		NotionSync_msg("Pull ALL writes page IDs straight down the '" . answer.texts["pageIdCol"] . "' column, so it only runs when that column is empty below its header. It already has data at row " . r.existingRow . ".`n`nClear that column (below the header) or pick an empty one, then try again.", "Notion Sync - Pull Page ID", "Icon!")
+		return
+	}
+
+	filtered := (Trim(answer.values["filterValue"]) != "")
+	if (r.total = 0) {
+		NotionSync_msg(filtered
+			? "No pages have '" . answer.texts["filterProp"] . "' containing '" . answer.values["filterValue"] . "', so nothing was written."
+			: "The local copy has no pages, so nothing was written.", "Notion Sync - Pull Page ID", "Icon!")
+		return
+	}
+
+	summary := "Wrote " . r.written . " page ID(s) into '" . answer.texts["pageIdCol"] . "', rows " . r.firstRow . " to " . r.lastRow . "."
+	if (filtered)
+		summary .= "`n`nFilter: pages whose '" . answer.texts["filterProp"] . "' contains '" . answer.values["filterValue"] . "'."
+	if (r.notWritten)
+		summary .= "`n`n" . r.notWritten . " more matched but weren't written (the row limit stopped them). Remove the limit, or raise 'Rows to process', to write the rest."
 	NotionSync_msg(summary, "Notion Sync - Pull Page ID", "Iconi")
 }
 
@@ -793,6 +861,8 @@ NotionSync_rowRange(answer, selectedRow) {
 ;             name to pre-select; for "checkbox", true/false). A field may also
 ;             carry `enabledWhen: { key, equals }` or `{ key, checked }` to grey
 ;             it out unless another field equals a value / a checkbox is (un)checked.
+;             A field may also carry `optional: true` so it can be left blank/unset
+;             (a "property" or text field left empty is returned as "").
 ; check     : (optional) a function taking the Map of answers (key -> column
 ;             number, property name or text) and returning "" if fine, or a
 ;             message to show.
@@ -934,14 +1004,28 @@ NotionSync_prompt(title, info, fields, check := "", ownerHwnd := 0) {
 		texts := Map()
 		for f in fields {
 			ctl := controls[f.key]
+			; A greyed-out field (its enabledWhen condition isn't met) isn't
+			; required and contributes a neutral value, so an unused match or
+			; filter field never blocks OK.
+			if (f.kind != "help" && !ctl.Enabled) {
+				values[f.key] := (f.kind = "checkbox") ? ctl.Value : (f.kind = "number") ? 0 : ""
+				texts[f.key] := (f.kind = "checkbox") ? (ctl.Value ? "1" : "0") : ""
+				continue
+			}
 			if (f.kind = "property") {
 				if (ctl.Value = 0) {
-					NotionSync_msg("Pick a Notion property for: " . f.label, "Notion Sync", "Icon! Owner" . dlg.Hwnd)
-					ctl.Focus()
-					return
+					if (f.HasOwnProp("optional") && f.optional) {
+						values[f.key] := ""
+						texts[f.key] := ""
+					} else {
+						NotionSync_msg("Pick a Notion property for: " . f.label, "Notion Sync", "Icon! Owner" . dlg.Hwnd)
+						ctl.Focus()
+						return
+					}
+				} else {
+					values[f.key] := propNamesByKey[f.key][ctl.Value]
+					texts[f.key] := propNamesByKey[f.key][ctl.Value]
 				}
-				values[f.key] := propNamesByKey[f.key][ctl.Value]
-				texts[f.key] := propNamesByKey[f.key][ctl.Value]
 			} else if (f.kind = "header") {
 				if (ctl.Value = 0 || ctl.Value = headerNames.Length + 1) {
 					NotionSync_msg("Pick an Excel header for:  " . f.label . "`n`n(Or choose '" . addHeaderLabel . "' to create one.)", "Notion Sync", "Icon! Owner" . dlg.Hwnd)
@@ -974,12 +1058,18 @@ NotionSync_prompt(title, info, fields, check := "", ownerHwnd := 0) {
 			} else {
 				entered := Trim(ctl.Value)
 				if (entered = "") {
-					NotionSync_msg("Enter a value for:  " . f.label, "Notion Sync", "Icon! Owner" . dlg.Hwnd)
-					ctl.Focus()
-					return
+					if (f.HasOwnProp("optional") && f.optional) {
+						values[f.key] := ""
+						texts[f.key] := ""
+					} else {
+						NotionSync_msg("Enter a value for:  " . f.label, "Notion Sync", "Icon! Owner" . dlg.Hwnd)
+						ctl.Focus()
+						return
+					}
+				} else {
+					values[f.key] := entered
+					texts[f.key] := entered
 				}
-				values[f.key] := entered
-				texts[f.key] := entered
 			}
 		}
 		if (check != "") {
@@ -1181,6 +1271,34 @@ NotionSync_cascadeDialog(dlg, ownerHwnd) {
 	WinMove(ownerX + cascadeOffsetX, ownerY + cascadeOffsetY, , , dlg.Hwnd)
 	WinShow("ahk_id " . dlg.Hwnd)
 	WinActivate("ahk_id " . dlg.Hwnd)
+}
+
+
+; Show <win> centered over the currently open Excel window (the most recently
+; active one -- first in Z-order, matching NotionSync_detectExcelWindow). With no
+; Excel window open, or a minimized one (off-screen -32000 coords), it just shows at
+; the OS default position instead of centering onto nothing / off-screen. Otherwise
+; the window is sized while hidden to learn its own width/height, then moved so its
+; midpoint sits on the Excel window's midpoint -- using Win32 SCREEN coordinates
+; (shared by WinGetPos and WinMove) so Gui.Show's DPI-scaled coords are never mixed
+; in. Same hidden-move-then-reveal technique as NotionSync_cascadeDialog.
+NotionSync_showCenteredOnExcel(win) {
+	excelHwnd := WinExist("ahk_class XLMAIN")
+	if (!excelHwnd || WinGetMinMax("ahk_id " . excelHwnd) = -1) {
+		win.Show()
+		return
+	}
+	; The window is still hidden here, so it's addressed by its PURE HWND (win.Hwnd,
+	; not "ahk_id " . win.Hwnd): a pure numeric handle finds a hidden window even with
+	; DetectHiddenWindows off, while an "ahk_id" string does not -- the same reason
+	; NotionSync_cascadeDialog moves its hidden dialog by win.Hwnd. Excel is visible,
+	; so its lookups can use either form.
+	win.Show("Hide")
+	WinGetPos(&exX, &exY, &exW, &exH, "ahk_id " . excelHwnd)
+	WinGetPos( , , &winW, &winH, win.Hwnd)
+	WinMove(exX + (exW - winW) // 2, exY + (exH - winH) // 2, , , win.Hwnd)
+	WinShow(win.Hwnd)
+	WinActivate(win.Hwnd)
 }
 
 

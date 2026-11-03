@@ -11,7 +11,7 @@
 ;				layer. Match a sheet row to a Notion entry, then push/pull data
 ;				both ways.
 
-; VERSION:		2.10.23.26
+; VERSION:		2.10.29.26
 ; AUTHOR:		Noel Gordon (noel.gordon@ceterapartners.com)
 ; SOURCE:		none
 
@@ -315,6 +315,58 @@ NotionExcelSync_stampPageIds(excelMatchCol, notionMatchProp, excelIdCol, startRo
 			result.duplicates++
 	}
 	return result
+}
+
+
+; Fill in Notion page IDs down a column WITHOUT matching -- the "pull all" sweep.
+; Enumerates page IDs straight from the loaded database (every page, or only the
+; pages whose <filterProp> value CONTAINS <filterValue> when a filter is given)
+; and writes them one per row down <excelIdCol>, starting at <startRow>. Because
+; nothing is matched to an existing sheet row, this is meant for an EMPTY
+; destination column: if that column already holds data below its header row it
+; refuses to run -- writing nothing -- so a stray column of values is never
+; clobbered, and reports that instead.
+;
+; excelIdCol  : sheet column NUMBER (1 = A, 2 = B, ...) to write the page IDs into.
+; startRow    : (optional) first row to write. Default 0 = the selected row.
+; endRow      : (optional) last row that may be written. Default 0 = no limit (one
+;               row per enumerated ID). A positive endRow caps how many IDs are
+;               written; any beyond it are reported in notWritten.
+; filterProp  : (optional) the Notion property tested by the "contains" filter.
+; filterValue : (optional) the substring that property must contain; blank (the
+;               default) means no filter -- every page is pulled.
+;
+; The database must already be in memory (NotionCom_pull / NotionCom_load).
+;
+; Returns { blocked, existingRow, firstRow, lastRow, total, written, notWritten }:
+;   blocked    : true when the ID column wasn't empty (nothing written); existingRow
+;                is then the last row in it that already had data.
+;   total      : how many page IDs were enumerated (after any filter).
+;   written    : how many rows were written (<= total; capped by endRow).
+;   notWritten : total - written (IDs left unwritten because endRow capped them).
+;   firstRow/lastRow : the row span written (lastRow < firstRow when none written).
+NotionExcelSync_stampAllPageIds(excelIdCol, startRow := 0, endRow := 0, filterProp := "", filterValue := "") {
+	hasFilter := (Trim(filterValue . "") != "")
+	if (hasFilter)
+		_NotionExcelSync_requireProperty(filterProp)
+	ctx := _NotionExcelSync_ctx()
+	firstRow := (startRow > 0) ? startRow : ctx.row
+
+	; Guard: a solid block of IDs is about to be written, so only run into an empty
+	; destination column -- refuse (writing nothing) if anything sits below row 1.
+	existingRow := _NotionExcelSync_lastRow(ctx.sheet, excelIdCol)
+	if (existingRow >= 2)
+		return { blocked: true, existingRow: existingRow, firstRow: firstRow, lastRow: firstRow - 1, total: 0, written: 0, notWritten: 0 }
+
+	ids := hasFilter ? NotionCom_containsIds(filterProp, filterValue) : NotionCom_allIds()
+	total := ids.Length
+	writable := (endRow > 0) ? Max(0, Min(total, endRow - firstRow + 1)) : total
+
+	loop writable
+		_NotionExcelSync_writeCell(ctx.sheet, firstRow + A_Index - 1, excelIdCol, ids[A_Index])
+
+	lastRow := (writable > 0) ? firstRow + writable - 1 : firstRow - 1
+	return { blocked: false, existingRow: 0, firstRow: firstRow, lastRow: lastRow, total: total, written: writable, notWritten: total - writable }
 }
 
 

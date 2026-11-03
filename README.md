@@ -14,6 +14,8 @@ Pick a Notion database from the list, point it at the Excel window to work on, t
 - **Pull Database** — download the latest copy of the Notion database and save it as the local
   copy. This is the only button that talks to Notion when reading.
 - **Pull Page ID** — match sheet rows to Notion pages and write each page's ID into a column.
+  Or tick **Pull ALL pages (no matching)** to write every page's ID (optionally filtered)
+  straight down an empty column — see [Pulling all pages](#pulling-all-pages-no-matching).
 - **Pull Property** — copy one Notion property down a column, using the page IDs in the sheet.
 - **Push Column** — push one Excel column **up** to a Notion property (text, URL/email/phone,
   multi-select, relation, date-only), with overwrite protection and a Replace/Append choice. This **writes
@@ -21,6 +23,19 @@ Pick a Notion database from the list, point it at the Excel window to work on, t
 
 Pull Page ID and Pull Property only ever read from the **local copy** (click Pull Database to
 refresh it); the bottom status bar shows when that copy was last updated.
+
+### Pulling all pages (no matching)
+
+In **Pull Page ID**, tick **Pull ALL pages (no matching)** to skip matching entirely and write
+*every* page's ID from the local copy straight down the chosen ID column (row 2 down, or from
+the selected row when **Start at selected row** is ticked). Optionally narrow it with a single
+**contains** filter — pick a Notion property and type a value, and only pages whose property
+contains that value are written (leave the value blank to pull them all).
+
+Because nothing is matched to existing rows, this mode is meant for an **empty** column: if the
+ID column already holds data below its header it refuses to run and writes nothing, so a column
+of values is never clobbered. Clear the column (or pick an empty one) and try again. It writes
+page IDs only — use **Pull Property** afterwards to fill in other columns from those IDs.
 
 ### Pushing dates (date-only)
 
@@ -44,7 +59,9 @@ This conversion applies to the GUI's column-push sweep, not the separate single-
 
 1. Open the Excel workbook you want to work on in **local desktop Excel** (online Microsoft 365
    sessions won't work — this reads Excel's COM object directly).
-2. Run `NotionSync_main.ahk` with AutoHotkey v2.
+2. Run `NotionSync_main.ahk` with AutoHotkey v2. When an Excel window is open, the
+   app detects it, fills its name into the **Excel Window Name** field, and opens the
+   main window centered over it.
 3. The first time **Pull Database** needs it, a dialog asks for your Notion integration secret
    (starts with `ntn_` or `secret_`). It is saved in `NotionSync.ini` next to the script, in
    **plain text**.
