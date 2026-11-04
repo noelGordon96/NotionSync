@@ -78,6 +78,10 @@ This conversion applies to the GUI's column-push sweep, not the separate single-
   **Git-ignored — contains the API key in plain text.**
 - `databases\` — *(created at runtime)* the saved local copy of each pulled database (real
   data). **Git-ignored.**
+- `NotionSync_trace.log` — *(created at runtime)* a small troubleshooting log: one
+  timestamped line per action, flushed immediately, so if the app ever closes
+  unexpectedly the last line shows how far it got. Holds no secrets; safe to
+  delete. **Git-ignored.**
 
 ## Dependencies
 

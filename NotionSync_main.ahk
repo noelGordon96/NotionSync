@@ -101,6 +101,11 @@ SetTitleMatchMode(2)
 iniFile := A_ScriptDir . "\NotionSync.ini"
 databaseDir := A_ScriptDir . "\databases"
 
+; Troubleshooting breadcrumb log, written next to the script and flushed one line
+; at a time, so if the process is ever killed mid-operation (e.g. by antivirus on
+; the first network call) the last line on disk still shows how far it got.
+traceFile := A_ScriptDir . "\NotionSync_trace.log"
+
 #Include "NotionExcelSync.ahk"
 
 
@@ -142,8 +147,11 @@ ui := {}
 
 ; Start the app -- but only when this file is the one being run, so a test
 ; script can #Include it to use the functions below without opening a window.
-if (A_LineFile = A_ScriptFullPath)
+if (A_LineFile = A_ScriptFullPath) {
+	OnError(NotionSync_logUncaught)   ; record an uncaught error before AHK's own box
+	NotionSync_trace("==== NotionSync started ====")
 	NotionSync_showMainWindow()
+}
 
 
 
@@ -462,9 +470,11 @@ NotionSync_run(action) {
 	if (appState.busy)
 		return
 	NotionSync_setBusy(true)
+	NotionSync_trace("action '" . action . "' started")
 	try {
 		NotionSync_doAction(action)
 	} catch as err {
+		NotionSync_trace("action '" . action . "' ERROR: " . (err is Error ? err.Message : err))
 		NotionSync_reportError(err)
 	} finally {
 		NotionSync_setBusy(false)
@@ -544,9 +554,14 @@ NotionSync_pullDatabase(db) {
 	appState.loadedKey := ""
 	NotionSync_status("Pulling the database from Notion...")
 	NotionSync_keepLibraryWindowsOnTop(true)
+	; Breadcrumbs straddle the (blocking) network call: if the process is killed
+	; inside it, "calling..." is the last line with no "returned" or "threw" after.
+	NotionSync_trace("pullDatabase: calling NotionCom_pull (db=" . db.id . ")")
 	try {
 		NotionCom_pull(apiKey, db.id)
+		NotionSync_trace("pullDatabase: NotionCom_pull returned")
 	} catch as err {
+		NotionSync_trace("pullDatabase: NotionCom_pull threw: " . err.Message)
 		if InStr(err.Message, "Notion API error 401") {
 			NotionSync_clearApiKey()
 			err.Message := "Notion rejected the saved API key, so it has been removed -- click Pull Database again to enter a new one.`n`n" . err.Message
@@ -557,6 +572,7 @@ NotionSync_pullDatabase(db) {
 	}
 	appState.loadedKey := NotionSync_idKey(db.id)
 	appState.connected := true
+	NotionSync_trace("pullDatabase: done (db=" . db.id . ")")
 }
 
 
@@ -1445,6 +1461,23 @@ NotionSync_readHeaders() {
 ; (used by the "Add new header..." option in the header pick-lists).
 NotionSync_writeHeader(col, name) {
 	NotionSync_excelSheet().Cells(1, col).Value := name
+}
+
+
+; Append one timestamped line to the troubleshooting log (see traceFile). Flushed
+; immediately -- FileAppend opens, writes and closes -- so the last line survives
+; even if the process is killed mid-operation. The bare try is deliberate: a
+; logging failure (e.g. the folder is read-only) must never take the app down.
+NotionSync_trace(text) {
+	try FileAppend(FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss") . "  " . text . "`n", traceFile, "UTF-8")
+}
+
+
+; OnError handler: record an uncaught error to the log before AutoHotkey shows its
+; own error box. Returns 0 so that default box still appears, unchanged.
+NotionSync_logUncaught(err, mode) {
+	NotionSync_trace("UNCAUGHT " . mode . ": " . (err is Error ? err.Message . "  (" . err.File . ":" . err.Line . ")" : err))
+	return 0
 }
 
 

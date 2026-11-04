@@ -2,3 +2,6 @@
 # Notion database (real data) -- never commit either.
 NotionSync.ini
 databases/
+
+# Runtime troubleshooting log (no secrets, but a local artifact -- don't commit).
+NotionSync_trace.log
